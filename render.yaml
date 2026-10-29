@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: farm-coop
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    # セーブを再起動後も残したい場合は有料プランでディスクを有効化:
+    # disk:
+    #   name: saves
+    #   mountPath: /var/data
+    #   sizeGB: 1
+    # envVars:
+    #   - key: DATA_DIR
+    #     value: /var/data

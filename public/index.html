@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>Farm Coop 3D</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{margin:0;overflow:hidden;font-family:system-ui,sans-serif;background:#87ceeb}
+#lobby{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(#9fd6f5,#bfe6a3);z-index:5}
+.card{background:#fff;padding:28px;border-radius:16px;width:320px;box-shadow:0 8px 30px #0003}
+.card h1{margin:0 0 14px;font-size:22px}.card input,.card button{width:100%;box-sizing:border-box;padding:10px;margin:5px 0;font-size:15px;border-radius:8px;border:1px solid #bbb}
+.card button{background:#3d8f3a;color:#fff;border:0;cursor:pointer}.card button.s{background:#6b7f8a}
+#err{color:#c00;min-height:20px;font-size:13px}
+#hud{position:fixed;inset:0;pointer-events:none;color:#fff;text-shadow:0 1px 3px #000;display:none}
+#top{position:absolute;top:10px;left:12px;font-size:16px;line-height:1.6}
+#cross{position:absolute;left:50%;top:50%;width:8px;height:8px;margin:-4px;border:2px solid #fff;border-radius:50%}
+#bar{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);display:flex;gap:6px}
+#bar div{background:#0007;padding:8px 10px;border-radius:8px;font-size:13px;text-align:center;min-width:62px;border:2px solid transparent}
+#bar div.on{border-color:#ffe066;background:#000a}
+#help{position:absolute;top:10px;right:12px;font-size:12px;text-align:right}
+</style></head><body>
+<div id="lobby"><div class="card"><h1>🌾 Farm Coop 3D</h1>
+<input id="name" placeholder="名前" maxlength="12">
+<input id="code" placeholder="部屋コード (英数字3〜12)" maxlength="12">
+<button id="join">コードで参加</button>
+<button id="create">部屋を作成（空欄ならランダム）</button>
+<button class="s" id="imp">セーブファイルから部屋を作成</button>
+<input type="file" id="file" accept=".json" style="display:none">
+<div id="err"></div></div></div>
+<div id="hud"><div id="cross"></div><div id="top"></div><div id="bar"></div>
+<div id="help">WASD移動 / Space ジャンプ / クリック 使用<br>1-6 道具 / K セーブ / L セーブDL / Esc カーソル解除</div></div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+<script type="module">
+import * as THREE from 'three';
+const N=12,S=2,H=N*S/2;
+const CROPS={wheat:{n:'小麦',cost:2,t:20,c:0xe5c34b},carrot:{n:'ニンジン',cost:4,t:35,c:0xf08a24},pumpkin:{n:'カボチャ',cost:8,t:60,c:0xe8620c}};
+const TOOLS=[['hoe','🪓 鍬'],['wheat','🌾 小麦'],['carrot','🥕 人参'],['pumpkin','🎃 南瓜'],['water','💧 水'],['harvest','✂ 収穫']];
+const $=id=>document.getElementById(id);
+let ws,playing=false,tool=0,myId=0,roomCode='',world=null;
+function connect(first){
+  ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
+  ws.onopen=first;
+  ws.onmessage=e=>{const m=JSON.parse(e.data);
+    if(m.t==='err')$('err').textContent=m.m;
+    else if(m.t==='joined'){myId=m.id;roomCode=m.code;start();}
+    else if(m.t==='world'){world=m;applyWorld();hud();}
+    else if(m.t==='players')updPlayers(m.list);
+    else if(m.t==='saved')flash('セーブしました');
+    else if(m.t==='export'){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(m.data)],{type:'application/json'}));a.download='farm-'+roomCode+'.json';a.click();}
+  };
+  ws.onclose=()=>{if(playing)alert('切断されました。再読み込みしてください')};
+}
+const nm=()=>$('name').value||'Player';
+const go=msg=>{$('err').textContent='';connect(()=>ws.send(JSON.stringify({name:nm(),...msg})))};
+$('join').onclick=()=>go({t:'join',code:$('code').value});
+$('create').onclick=()=>go({t:'create',code:$('code').value});
+$('imp').onclick=()=>$('file').click();
+$('file').onchange=async e=>{try{const s=JSON.parse(await e.target.files[0].text());go({t:'create',code:$('code').value||s.code,save:s})}catch{$('err').textContent='読み込み失敗'}};
+let msgT;function flash(t){const d=$('top');d.dataset.m=t;hud();clearTimeout(msgT);msgT=setTimeout(()=>{d.dataset.m='';hud()},2000)}
+function hud(){
+  $('top').innerHTML=`部屋コード: <b>${roomCode}</b><br>💰 ${world?world.coins:0}　👥 ${players.size+1}人<br>${$('top').dataset.m||''}`;
+  $('bar').innerHTML=TOOLS.map((t,i)=>`<div class="${i===tool?'on':''}">${i+1}<br>${t[1]}${CROPS[t[0]]?'<br>¥'+CROPS[t[0]].cost:''}</div>`).join('');
+}
+// ---- 3D ----
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x87ceeb);scene.fog=new THREE.Fog(0x87ceeb,40,120);
+const cam=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,.1,200);
+scene.add(new THREE.HemisphereLight(0xffffff,0x5a8a4a,1.1));
+const sun=new THREE.DirectionalLight(0xfff2cc,1.2);sun.position.set(30,50,20);scene.add(sun);
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(300,300),new THREE.MeshLambertMaterial({color:0x6bbf59}));ground.rotation.x=-Math.PI/2;ground.position.y=-.02;scene.add(ground);
+for(let i=0;i<40;i++){const a=Math.random()*6.28,d=22+Math.random()*50,t=new THREE.Group();
+  const tr=new THREE.Mesh(new THREE.CylinderGeometry(.3,.4,2.5),new THREE.MeshLambertMaterial({color:0x7a5230}));tr.position.y=1.25;
+  const lf=new THREE.Mesh(new THREE.ConeGeometry(1.8,4,8),new THREE.MeshLambertMaterial({color:0x2e7d32}));lf.position.y=4.2;t.add(tr,lf);t.position.set(Math.cos(a)*d,0,Math.sin(a)*d);scene.add(t);}
+const tiles=[],crops=[],tgeo=new THREE.BoxGeometry(S-.12,.12,S-.12);
+for(let i=0;i<N*N;i++){const x=i%N,z=(i/N)|0;
+  const m=new THREE.Mesh(tgeo,new THREE.MeshLambertMaterial({color:0x4c9a3a}));m.position.set(x*S-H+S/2,.04,z*S-H+S/2);m.userData.i=i;scene.add(m);tiles.push(m);
+  const c=new THREE.Mesh(new THREE.ConeGeometry(.5,1,6),new THREE.MeshLambertMaterial({color:0x3fae3f}));c.position.set(m.position.x,.1,m.position.z);c.visible=false;scene.add(c);crops.push(c);}
+const hl=new THREE.Mesh(new THREE.BoxGeometry(S,.3,S),new THREE.MeshBasicMaterial({color:0xffff66,wireframe:true}));hl.visible=false;scene.add(hl);
+function applyWorld(){world.tiles.forEach((t,i)=>{
+  tiles[i].material.color.setHex(t.s===0?0x4c9a3a:t.w>0?0x3b2614:0x6b4423);
+  const c=crops[i];c.visible=t.s===2;
+  if(t.s===2){const cr=CROPS[t.c],p=Math.min(1,t.g/cr.t);c.scale.set(.5+p,.3+p*1.2,.5+p);c.position.y=.1+c.scale.y*.5;c.material.color.setHex(p>=1?cr.c:0x3fae3f);}
+});}
+// players
+const players=new Map();
+function label(text){const cv=document.createElement('canvas');cv.width=256;cv.height=64;const g=cv.getContext('2d');g.fillStyle='#0008';g.fillRect(0,0,256,64);g.fillStyle='#fff';g.font='36px sans-serif';g.textAlign='center';g.fillText(text,128,44);
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv)}));s.scale.set(2,.5,1);return s;}
+function updPlayers(list){const seen=new Set();
+  list.forEach(p=>{if(p.id===myId)return;seen.add(p.id);let o=players.get(p.id);
+    if(!o){const g=new THREE.Group(),b=new THREE.Mesh(new THREE.CapsuleGeometry(.4,1,4,8),new THREE.MeshLambertMaterial({color:new THREE.Color().setHSL((p.id*.37)%1,.7,.5)}));b.position.y=.9;
+      const l=label(p.name);l.position.y=2.2;g.add(b,l);scene.add(g);o={g,t:p};players.set(p.id,o);hud();}
+    o.t=p;});
+  for(const[id,o]of players)if(!seen.has(id)){scene.remove(o.g);players.delete(id);hud();}}
+// controls
+let yaw=0,pitch=0,vy=0;const pos=new THREE.Vector3(0,0,H+4),keys={};
+renderer.domElement.addEventListener('click',()=>{if(playing&&document.pointerLockElement!==renderer.domElement)renderer.domElement.requestPointerLock()});
+addEventListener('mousemove',e=>{if(document.pointerLockElement){yaw-=e.movementX*.002;pitch=Math.max(-1.5,Math.min(1.5,pitch-e.movementY*.002));}});
+addEventListener('keydown',e=>{if(!playing)return;keys[e.code]=1;
+  const k=+e.key;if(k>=1&&k<=6){tool=k-1;hud();}
+  if(e.code==='KeyK')ws.send('{"t":"save"}');if(e.code==='KeyL')ws.send('{"t":"export"}');});
+addEventListener('keyup',e=>keys[e.code]=0);
+const ray=new THREE.Raycaster();let target=-1;
+addEventListener('mousedown',()=>{if(document.pointerLockElement&&target>=0)ws.send(JSON.stringify({t:'act',i:target,tool:TOOLS[tool][0]}));});
+addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+function start(){playing=true;$('lobby').style.display='none';$('hud').style.display='block';hud();setInterval(()=>ws.send(JSON.stringify({t:'move',p:[pos.x,pos.y,pos.z],r:yaw})),100);loop();}
+let last=performance.now();
+function loop(){requestAnimationFrame(loop);const now=performance.now(),dt=Math.min(.05,(now-last)/1000);last=now;
+  const f=(keys.KeyW?1:0)-(keys.KeyS?1:0),r=(keys.KeyD?1:0)-(keys.KeyA?1:0),sp=(keys.ShiftLeft?9:6)*dt;
+  pos.x+=(-Math.sin(yaw)*f+Math.cos(yaw)*r)*sp;pos.z+=(-Math.cos(yaw)*f-Math.sin(yaw)*r)*sp;
+  pos.x=Math.max(-45,Math.min(45,pos.x));pos.z=Math.max(-45,Math.min(45,pos.z));
+  vy-=25*dt;pos.y+=vy*dt;if(pos.y<=0){pos.y=0;vy=0;if(keys.Space)vy=8;}
+  cam.position.set(pos.x,pos.y+1.7,pos.z);cam.rotation.set(pitch,yaw,0,'YXZ');
+  ray.setFromCamera({x:0,y:0},cam);const h=ray.intersectObjects(tiles)[0];
+  if(h&&h.distance<10){target=h.object.userData.i;hl.position.copy(h.object.position);hl.visible=true;}else{target=-1;hl.visible=false;}
+  players.forEach(o=>{o.g.position.lerp(new THREE.Vector3(...o.t.p),.3);o.g.rotation.y=o.t.r;});
+  renderer.render(scene,cam);}
+</script></body></html>
